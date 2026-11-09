@@ -1,0 +1,274 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  STALL_OWNER
+  STALL_MANAGER
+  STALL_STAFF
+  SHOP_ADMIN // legacy alias for STALL_OWNER
+}
+
+enum StallStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum MenuStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum FoodType {
+  VEG
+  NON_VEG
+  EGG
+}
+
+enum StallMemberRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum ThemeTemplate {
+  LUXURY
+  MINIMAL
+  STREET_FOOD
+  FRESH
+}
+
+enum LayoutType {
+  GRID
+  LIST
+  COMPACT
+}
+
+enum AnalyticsEventType {
+  MENU_VIEW
+  QR_SCAN
+  CATEGORY_VIEW
+  ITEM_VIEW
+}
+
+model User {
+  id           String            @id @default(cuid())
+  name         String
+  email        String            @unique
+  passwordHash String
+  role         UserRole          @default(STALL_OWNER)
+  phone        String?
+  isActive     Boolean           @default(true)
+  stallId      String?
+  stall        Stall?            @relation("PrimaryStallUsers", fields: [stallId], references: [id], onDelete: SetNull)
+  memberships  StallMember[]
+  publications MenuPublication[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([stallId])
+  @@index([role])
+  @@index([email])
+}
+
+model Stall {
+  id              String            @id @default(cuid())
+  name            String
+  slug            String            @unique
+  description     String?
+  tagline         String?
+  cuisineType     String?
+  logoUrl         String?
+  coverUrl        String?
+  address         String?
+  city            String?
+  phone           String?
+  email           String?
+  status          StallStatus       @default(ACTIVE)
+  menuStatus      MenuStatus        @default(DRAFT)
+  primaryColor    String            @default("#142235")
+  users           User[]            @relation("PrimaryStallUsers")
+  members         StallMember[]
+  categories      Category[]
+  foodItems       FoodItem[]
+  theme           StallTheme?
+  publications    MenuPublication[]
+  qrCode          QRCode?
+  analyticsEvents AnalyticsEvent[]
+  auditLogs       AuditLog[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([status])
+  @@index([slug])
+}
+
+model StallMember {
+  id                  String          @id @default(cuid())
+  stallId             String
+  stall               Stall           @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role                StallMemberRole @default(STAFF)
+  canAddItems         Boolean         @default(true)
+  canEditPrices       Boolean         @default(false)
+  canManageCategories Boolean         @default(false)
+  canCustomizeMenu    Boolean         @default(false)
+  canManageStaff      Boolean         @default(false)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  @@unique([stallId, userId])
+  @@index([stallId])
+  @@index([userId])
+}
+
+model Category {
+  id          String     @id @default(cuid())
+  stallId     String
+  stall       Stall      @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  imageUrl    String?
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  foodItems   FoodItem[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([stallId, name])
+  @@unique([id, stallId])
+  @@index([stallId, sortOrder])
+}
+
+model FoodItem {
+  id                 String        @id @default(cuid())
+  stallId            String
+  stall              Stall         @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  categoryId         String
+  category           Category      @relation(fields: [categoryId, stallId], references: [id, stallId], onDelete: Cascade)
+  name               String
+  description        String?
+  imageUrl           String?
+  foodType           FoodType      @default(VEG)
+  basePriceMinor     Int
+  discountPriceMinor Int?
+  currencyCode       String        @default("INR")
+  isAvailable        Boolean       @default(true)
+  isFeatured         Boolean       @default(false)
+  prepTimeMinutes    Int?
+  sortOrder          Int           @default(0)
+  tags               String[]      @default([])
+  variants           FoodVariant[]
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([stallId, categoryId])
+  @@index([stallId, isAvailable])
+  @@index([stallId, foodType])
+}
+
+model FoodVariant {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  priceMinor  Int
+  isAvailable Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  foodItemId  String
+  foodItem    FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([foodItemId])
+}
+
+model StallTheme {
+  id              String        @id @default(cuid())
+  stallId         String        @unique
+  stall           Stall         @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  templateId      ThemeTemplate @default(MINIMAL)
+  primaryColor    String        @default("#142235")
+  secondaryColor  String        @default("#E8A64A")
+  backgroundColor String        @default("#F5F7FA")
+  accentColor     String        @default("#27364A")
+  fontHeading     String        @default("Manrope")
+  fontBody        String        @default("DM Sans")
+  layoutType      LayoutType    @default(GRID)
+  categoryStyle   String        @default("TABS")
+  cardStyle       String        @default("COMPACT")
+  isHeaderSticky  Boolean       @default(true)
+  showCoverBanner Boolean       @default(true)
+  bannerHeight    Int           @default(220)
+  socialLinks     Json?
+  customSettings  Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model MenuPublication {
+  id                String   @id @default(cuid())
+  stallId           String
+  stall             Stall    @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  version           Int      @default(1)
+  snapshot          Json
+  publishedByUserId String?
+  publishedByUser   User?    @relation(fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  isActive          Boolean  @default(true)
+  publishedAt       DateTime @default(now())
+
+  @@index([stallId, isActive])
+  @@index([stallId, version])
+}
+
+model QRCode {
+  id              String   @id @default(cuid())
+  stallId         String   @unique
+  stall           Stall    @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  qrUrl           String
+  foregroundColor String   @default("#000000")
+  backgroundColor String   @default("#FFFFFF")
+  includeLogo     Boolean  @default(true)
+  scanCount       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model AnalyticsEvent {
+  id          String             @id @default(cuid())
+  stallId     String
+  stall       Stall              @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  eventType   AnalyticsEventType @default(MENU_VIEW)
+  entityId    String?
+  visitorHash String?
+  userAgent   String?
+  referrer    String?
+  createdAt   DateTime           @default(now())
+
+  @@index([stallId, eventType, createdAt])
+  @@index([stallId, visitorHash])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  stallId    String?
+  stall      Stall?   @relation(fields: [stallId], references: [id], onDelete: SetNull)
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([stallId, createdAt])
+}

@@ -1,0 +1,7 @@
+.git
+.gemini
+.env.local
+.env.*.local
+*.log
+scratch/
+test-*.js
