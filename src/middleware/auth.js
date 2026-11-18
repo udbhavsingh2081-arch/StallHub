@@ -1,88 +1,60 @@
-import { prisma } from "../db.js";
+import jwt from "jsonwebtoken";
+import { User } from "../models/User.js";
 
-export function requireAuth(req, res, next) {
-  if (!req.isAuthenticated?.() || !req.user?.isActive) {
-    return res.status(401).json({ error: "unauthorized", message: "Please sign in to continue." });
+const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || "stallhub-jwt-secret-key-32-chars-minimum";
+
+export function signToken(user) {
+  return jwt.sign(
+    {
+      id: user._id,
+      email: user.email,
+      role: user.role,
+      stallId: user.stallId
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+
+export async function authenticate(req, res, next) {
+  try {
+    let token = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.split(" ")[1];
+    } else if (req.query.token) {
+      token = req.query.token;
+    }
+
+    if (!token) {
+      return res.status(401).json({ error: "unauthorized", message: "Please sign in to continue." });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.id).select("-password");
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({ error: "unauthorized", message: "User account is suspended or invalid." });
+    }
+
+    req.user = user;
+    req.stallId = user.stallId;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "invalid_token", message: "Session expired. Please sign in again." });
+  }
+}
+
+export function requireSuperAdmin(req, res, next) {
+  if (req.user?.role !== "super_admin") {
+    return res.status(403).json({ error: "forbidden", message: "Only the platform owner can access this resource." });
   }
   next();
 }
 
-export function requireRole(...roles) {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: "unauthorized", message: "Please sign in." });
-    }
-
-    // Map legacy SHOP_ADMIN to STALL_OWNER
-    const userRole = req.user.role === "SHOP_ADMIN" ? "STALL_OWNER" : req.user.role;
-    const normalizedRoles = roles.map(r => r === "SHOP_ADMIN" ? "STALL_OWNER" : r);
-
-    if (!normalizedRoles.includes(userRole) && req.user.role !== "SUPER_ADMIN") {
-      return res.status(403).json({ error: "forbidden", message: "You do not have permission to perform this action." });
-    }
-    next();
-  };
-}
-
-export async function requireStallAccess(req, res, next) {
-  // Super Admin can access any stall or specified stall via query/body
-  if (req.user?.role === "SUPER_ADMIN") {
-    const targetStallId = req.params.stallId || req.query.stallId || req.query.shopId || req.body?.stallId || req.body?.shopId || req.user.stallId;
-    if (targetStallId) {
-      req.stallId = targetStallId;
-      req.shopId = targetStallId;
-    }
-    return next();
+export function requireStallOwner(req, res, next) {
+  if (req.user?.role !== "stall_owner" && req.user?.role !== "super_admin") {
+    return res.status(403).json({ error: "forbidden", message: "Access restricted to stall owners." });
   }
-
-  // Tenant Isolation for Stall Owners & Staff
-  const userStallId = req.user?.stallId;
-  if (!userStallId) {
-    return res.status(403).json({ error: "stall_not_assigned", message: "No food stall is assigned to this account." });
-  }
-
-  const stall = await prisma.stall.findUnique({
-    where: { id: userStallId },
-    select: { id: true, status: true, name: true }
-  });
-
-  if (!stall || stall.status !== "ACTIVE") {
-    return res.status(403).json({
-      error: "stall_unavailable",
-      message: "This stall is temporarily suspended or inactive. Please contact the platform administrator."
-    });
-  }
-
-  req.stallId = stall.id;
-  req.shopId = stall.id; // alias for backward compatibility
   next();
-}
-
-// Backward-compatibility alias
-export const requireShopAccess = requireStallAccess;
-
-export function requirePermission(permissionKey) {
-  return async (req, res, next) => {
-    if (req.user?.role === "SUPER_ADMIN" || req.user?.role === "STALL_OWNER" || req.user?.role === "SHOP_ADMIN") {
-      return next();
-    }
-
-    const membership = await prisma.stallMember.findUnique({
-      where: {
-        stallId_userId: {
-          stallId: req.stallId,
-          userId: req.user.id
-        }
-      }
-    });
-
-    if (!membership || !membership[permissionKey]) {
-      return res.status(403).json({
-        error: "insufficient_permission",
-        message: `Your account role does not have permission to: ${permissionKey}.`
-      });
-    }
-
-    next();
-  };
 }

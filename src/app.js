@@ -1,142 +1,85 @@
 import "dotenv/config";
 import express from "express";
-import session from "express-session";
-import connectPgSimple from "connect-pg-simple";
-import passport from "passport";
-import { Strategy as LocalStrategy } from "passport-local";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
-import { pool, prisma } from "./db.js";
-import { UserModel } from "./models/UserModel.js";
-import { requireAuth } from "./middleware/auth.js";
-import { notFound, errorHandler } from "./middleware/errors.js";
+import path from "path";
+import { fileURLToPath } from "url";
+import mongoose from "mongoose";
 
-// Routes
 import authRoutes from "./routes/auth.js";
-import adminRoutes from "./routes/admin.js";
 import stallRoutes from "./routes/stall.js";
+import categoryRoutes from "./routes/categories.js";
+import foodItemRoutes from "./routes/foodItems.js";
+import superAdminRoutes from "./routes/superAdmin.js";
 import publicMenuRoutes from "./routes/publicMenu.js";
-import webRoutes from "./routes/web.js";
 
-const app = express();
-const PgStore = connectPgSimple(session);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const allowedOrigins = (process.env.FRONTEND_URL || "")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
+export const app = express();
 
 app.set("trust proxy", 1);
 
 app.use(
   helmet({
-    contentSecurityPolicy: false, // Allows Tailwind CDN & Google Fonts on web views
+    contentSecurityPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" }
   })
 );
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      if (process.env.NODE_ENV !== "production" && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        return callback(null, true);
-      }
-      callback(null, true); // Allow all during development & demo testing
-    },
+    origin: true,
     credentials: true
   })
 );
 
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-
-// PostgreSQL-backed Session Store
-app.use(
-  session({
-    store: new PgStore({ pool, tableName: "user_sessions", createTableIfMissing: true }),
-    name: "foodstallhub.sid",
-    secret: process.env.SESSION_SECRET || "foodstallhub-super-secret-key-32-chars-long",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 1000 * 60 * 60 * 24 * 7 // 7 days
-    }
-  })
-);
-
-// Passport Local Strategy
-passport.use(
-  new LocalStrategy({ usernameField: "email", passwordField: "password" }, async (email, password, done) => {
-    try {
-      const user = await UserModel.findByEmail(email);
-      if (!user || !user.isActive) {
-        return done(null, false, { message: "Email or password is incorrect." });
-      }
-      const valid = await UserModel.verifyPassword(password, user.passwordHash);
-      if (!valid) {
-        return done(null, false, { message: "Email or password is incorrect." });
-      }
-      return done(null, user);
-    } catch (error) {
-      return done(error);
-    }
-  })
-);
-
-passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser(async (id, done) => {
-  try {
-    const user = await UserModel.findById(id);
-    done(null, user || false);
-  } catch (error) {
-    done(error);
-  }
-});
-
-app.use(passport.initialize());
-app.use(passport.session());
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 // Health Check
-app.get("/api/health", async (req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({
-      status: "ok",
-      service: "FoodStallHub API (MVC)",
-      database: "connected",
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error("HEALTH_CHECK_ERROR", error.message);
-    res.status(503).json({
-      status: "degraded",
-      service: "FoodStallHub API",
-      database: "unavailable"
-    });
-  }
+app.get("/api/health", (req, res) => {
+  const isConnected = mongoose.connection.readyState === 1;
+  res.status(isConnected ? 200 : 503).json({
+    status: isConnected ? "ok" : "degraded",
+    service: "StallHub MERN Stack API",
+    database: isConnected ? "connected" : "disconnected",
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Authentication Status Check
-app.get("/api/session-check", requireAuth, (req, res) => {
-  res.json({ authenticated: true, user: UserModel.sanitize(req.user) });
-});
-
-// Mount Web & API Routers
-app.use("/", webRoutes);
-app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: 100 }), authRoutes);
-app.use("/api/admin", adminRoutes);
+// API Routes
+app.use("/api/auth", authRoutes);
 app.use("/api/stall", stallRoutes);
-app.use("/api/shop", stallRoutes); // Backward compatibility alias
+app.use("/api/categories", categoryRoutes);
+app.use("/api/food-items", foodItemRoutes);
+app.use("/api/super-admin", superAdminRoutes);
 app.use("/api/public/menu", publicMenuRoutes);
 
-// Error Handling Middlewares
-app.use(notFound);
-app.use(errorHandler);
+// Static Client Serving (Production / Unified Single-Port Hosting)
+const clientDistPath = path.resolve(__dirname, "../client/dist");
+app.use(express.static(clientDistPath));
+
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ error: "not_found", message: "API endpoint not found." });
+  }
+  res.sendFile(path.join(clientDistPath, "index.html"), err => {
+    if (err) {
+      res.status(200).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>StallHub API</title></head>
+        <body style="font-family:sans-serif;padding:40px;background:#f8fafc;color:#0f172a;">
+          <h2>StallHub MERN API Server is Running</h2>
+          <p>Database: <strong>Connected</strong></p>
+          <p>Client build: Run <code>npm run build</code> to compile the React frontend.</p>
+          <p><a href="/api/health">Check Health</a></p>
+        </body>
+        </html>
+      `);
+    }
+  });
+});
 
 export default app;
